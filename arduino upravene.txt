@@ -1,0 +1,409 @@
+//libraries for lcd and wire and max
+#include <LiquidCrystal_I2C.h>
+#include <Wire.h>
+#include "max6675.h"
+
+float cell1V = 0.00;          //sets variable for the voltage of the first cell
+float cell2V = 0.00;          //sets variable for the voltage of the second cell
+float cell3V = 0.00;          //sets variable for the voltage of the third cell
+float cell4V = 0.00;          //sets variable for the voltage of the third cell
+float calV = 0.00;            //sets variable for supply voltage compensation
+float supplyV = 4.95;         //sets variable for the voltage of the supply to the arduino
+
+const float cell1Cal = 16.00 + 0.5; //allows for voltage calibration of the first cell, default = 50.00 + 0.00
+const float cell2Cal = 16.00 + 0.08; //allows for voltage calibration of the second cell, default = 50.00 + 0.00
+const float cell3Cal = 16.00 + 0.13; //allows for voltage calibration of the third cell, default = 50.00 + 0.00
+const float cell4Cal = 16.00 + 0.08; //allows for voltage calibration of the third cell, default = 50.00 + 0.00
+
+const float zenerV = 2.47;    // measured voltage of the voltage reference
+
+float cell1AverageVal = 0.00; //sets variable for use in calculating the average voltage of cell 1
+float cell2AverageVal = 0.00; //sets variable for use in calculating the average voltage of cell 2
+float cell3AverageVal = 0.00; //sets variable for use in calculating the average voltage of cell 3
+float cell4AverageVal = 0.00; //sets variable for use in calculating the average voltage of cell 4
+
+float cell1AverageV = 0.00;   //sets variable for the current voltage of cell 1
+float cell2AverageV = 0.00;   //sets variable for the current voltage of cell 2
+float cell3AverageV = 0.00;   //sets variable for the current voltage of cell 3
+float cell4AverageV = 0.00;   //sets variable for the current voltage of cell 4
+float cellAverageV = 0.00;    //average voltage
+
+
+
+float currentAmps = 0.00;     //output current variable
+float currentAmpsCh = 0.00;   //input current variable
+float temp = 0.00;
+
+float balanceVal = 3.65;      //voltage for the balancing to start
+float protectLow = 2.5;       //voltage for undervoltage protection
+float maxTemp = 45;           //max temp where output is turned off
+float ampCutoff = 2.5;        //current where output is turned off
+
+int zenerVal = 0;             
+int cell1Val = 0;             //variable used for analog reading of cell 1
+int cell2Val = 0;             //variable used for analog reading of cell 2
+int cell3Val = 0;             //variable used for analog reading of cell 3
+int cell4Val = 0;             //variable used for analog reading of cell 4
+int averages = 100;           //sets the number of averages taken during each voltage Measurement
+
+const int cell1Bal = 8;       //sets pin 2 as the output to control the balance circuit for cell 1
+const int cell2Bal = 7;       //sets pin 3 as the output to control the balance circuit for cell 2
+const int cell3Bal = 6;       //sets pin 4 as the output to control the balance circuit for cell 3
+const int cell4Bal = 5;       //sets pin 4 as the output to control the balance circuit for cell 4
+const int powerOut = 4;       //sets pin 5 as the output to control the incoming power
+
+int flag = 0;                 //sets up a flag for later use in cell balancing
+
+int wait = 0;
+int mode = 0;
+
+int buttonPin = 2;
+int buttonPin2 = 3;
+int lastButtonState = HIGH;
+int lastButtonState2 = HIGH;
+int buttonVal1;
+int buttonVal2;
+int currentMode = 1;
+
+
+//pins for max6675
+int thermoMISO = 12; 
+int thermoCS = 11;
+int thermoSCK = 13;
+
+//pins for ina
+int inaLoad = A7;
+int inaCh = A6;
+float Rsense = 0.01;
+float gain = 20.0;
+float adcValue;
+
+byte invertedColon[8] = { //used for signalizing balancing on LCD
+  B11111,
+  B10011,
+  B10011,
+  B11111,
+  B10011,
+  B10011,
+  B11111,
+  B11111,
+};
+
+// Time tracking for lcd switching
+unsigned long lastSwitchTime = 0;
+const unsigned long displayInterval = 10000; // 10 seconds
+
+LiquidCrystal_I2C lcd(0x27,  16, 2); //lcd needs this
+MAX6675 thermocouple(thermoSCK, thermoCS, thermoMISO); //max needs this
+
+void setup() {                
+  analogReference(EXTERNAL);
+  lcd.init();                 // inicializes the LCD
+  lcd.backlight();            // turns on backlight of LCD
+  Serial.begin(115200);       //enables serial output
+  lcd.setCursor(0,0);         //enables the 16x2 LCD
+  lcd.print("Loading");       //write something to the LCD
+  lcd.setCursor(0,1);         //move the cursor the the second line
+  lcd.print("Digital BMS");   //write more to the LCD
+
+  pinMode(buttonPin, INPUT_PULLUP); //button 1 input declaration
+  pinMode(buttonPin2, INPUT_PULLUP); //button 2 input declaration
+
+  pinMode(cell1Bal, OUTPUT);  //set balance pin for cell 1 as output
+  pinMode(cell2Bal, OUTPUT);  //set balance pin for cell 2 as output
+  pinMode(cell3Bal, OUTPUT);  //set balance pin for cell 3 as output
+  pinMode(cell4Bal, OUTPUT);  //set balance pin for cell 4 as output
+  pinMode(powerOut, OUTPUT);  //set output power pin as output
+  delay(2000);                //2 second delay so you can read the screen
+}                             //end of void setup
+void takeMeasurements();
+void safetyCheck();
+
+void loop() {                 //void loop runs perpetually after the void setup has finished
+  operate();
+  readSwitch();
+}
+
+void operate () {
+  switch (currentMode) {
+    case 1:
+      digitalWrite(cell1Bal, LOW); //turns off balancing, power out is high until something wrong happens
+      digitalWrite(cell2Bal, LOW);
+      digitalWrite(cell3Bal, LOW);
+      digitalWrite(cell4Bal, LOW);
+      takeMeasurements();
+      serialDump();
+      lcdWrite();
+      safetyCheck();
+      break;
+
+    case 2:
+      digitalWrite(powerOut, LOW); //turns off power out, not needed during charging
+      takeMeasurements();
+      serialDump();
+      lcdWrite();
+      balanceVoltageCheck();
+      break;
+  }
+}
+void readSwitch() { //reads the input of switches
+  int buttonVal = digitalRead(buttonPin);
+  int buttonVal2 = digitalRead(buttonPin2);
+  if((buttonVal == LOW) && (lastButtonState == HIGH)) {
+   currentMode = 1;
+  }
+  if((buttonVal2 == LOW) && (lastButtonState2 == HIGH)) {
+   currentMode = 2;
+  }
+  lastButtonState - buttonVal;
+  lastButtonState2 - buttonVal2;
+}
+
+
+void serialDump() {
+  Serial.print("Cell 1 Voltage = ");  //dump the measured voltages and currents to the serial monitor
+  Serial.println(cell1AverageV);
+  Serial.print("Cell 2 Voltage = ");
+  Serial.println(cell2AverageV);
+  Serial.print("Cell 3 Voltage = ");
+  Serial.println(cell3AverageV);
+  Serial.print("Cell 4 Voltage = ");
+  Serial.println(cellAverageV);
+  Serial.print("Supply Voltage = ");
+  Serial.println(supplyV);
+
+  Serial.print("Button State = ");
+  Serial.println(buttonState);
+  Serial.print("LCD State = ");           //end of serial writing
+}
+
+void lcdWrite() {
+  unsigned long currentTime = millis();
+  bool showVoltage = ((currentTime - lastSwitchTime) / displayInterval) % 2 == 0;
+  switch (currentMode) {
+    case 1:                               //charging mode
+    if (showVoltage) {
+      if(flag)
+      lcd.clear();     
+      lcd.setCursor(0, 0);                
+      lcd.print("1: ");                   
+      lcd.print(cell1AverageV);
+      lcd.print(" 2: ");
+      lcd.print(cell2AverageV);
+      lcd.setCursor(0, 1);                
+      lcd.print("3: ");
+      lcd.print(cell3AverageV);
+      lcd.print(" 4: ");
+      lcd.print(cell4AverageV);
+      delay(200);                        // slight delay to reduce flicker
+  } else {
+    lcd.clear();
+    lcd.setCursor(0, 1);
+    lcd.print("Curr: ");
+    lcd.print(" A  ");
+    lcd.print(currentAmps);    
+     delay(200); // slight delay to reduce flicker
+  }
+    break;
+
+    case 2:
+    if (showVoltage) {                     //discharge mode
+      lcd.clear();                        
+      lcd.print("Pack V : ");              
+      lcd.print(cell1AverageV + cell2AverageV + cell3AverageV + cell4AverageV);
+      lcd.setCursor(0, 1);                //move the cursor to the start of the second line
+      lcd.print("Charge A : ");
+      lcd.print(currentAmpsCh);  
+      delay(200); // slight delay to reduce flicker
+    }
+    else {
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("Pack Temp: ");
+      lcd.print(temp);  
+      delay(200); // slight delay to reduce flicker
+    }
+      break;       //end of lcd control section
+  }
+}
+
+void balanceVoltageCheck() {
+  if (cell1AverageV >= balanceVal) {  //if the voltage of cell 1 is at or higher than the balance voltage
+    digitalWrite(cell1Bal, HIGH);     //turn the balance circuit on for cell 1
+    flag = 1;                         //set flag equal to 1
+    if (currentMode == 2) {           //if the curent lcd state is set for cell votage display
+      lcd.setCursor(1, 0);            //move cursor
+      lcd.write(byte(0));             //display inverted semicolon
+    }
+  }
+
+  else {                              //if the voltage of cell 1 is lower than the balance voltage
+    digitalWrite(cell1Bal, LOW);      //turn the balance circuit off for cell 1
+  }                                   //end of if/else statment
+  
+  if (cell2AverageV >= balanceVal) {  //if the voltage of cell 2 is at or higher than the balance voltage
+    digitalWrite(cell2Bal, HIGH);     //turn the balance circuit on for cell 2
+    flag = 1;                         //set flag equal to 1
+    if (currentMode == 2) {              //if the curent lcd state is set for cell votage display
+      lcd.setCursor(9, 0);            //move cursor
+      lcd.write(byte(0));             //display inverted semicolon
+    }
+  }
+
+  else {                              //if the voltage of cell 2 is lower than the balance voltage
+    digitalWrite(cell2Bal, LOW);      //turn the balance circuit off for cell 2
+  }                                   //end of if/else statment
+
+  if (cell3AverageV >= balanceVal) {  //if the voltage of cell 3 is at or higher than the balance voltage
+    digitalWrite(cell3Bal, HIGH);     //turn the balance circuit on for cell 3
+    flag = 1;                         //set flag equal to 1
+    if (currentMode == 2) {              //if the curent lcd state is set for cell votage display
+      lcd.setCursor(1, 1);            //move cursor
+      lcd.write(byte(0));             //display inverted semicolon
+    }
+  }
+
+  else {                              //if the voltage of cell 3 is lower than the balance voltage
+    digitalWrite(cell3Bal, LOW);      //turn the balance circuit off for cell 3
+  }                                   //end of if/else statment
+
+if (cell4AverageV >= balanceVal) {  //if the voltage of cell 3 is at or higher than the balance voltage
+    digitalWrite(cell4Bal, HIGH);     //turn the balance circuit on for cell 3
+    flag = 1;                         //set flag equal to 1
+    if (currentMode == 2) {              //if the curent lcd state is set for cell votage display
+      lcd.setCursor(1, 1);            //move cursor
+      lcd.write(byte(0));             //display inverted semicolon
+    }
+  }
+
+  else {                              //if the voltage of cell 3 is lower than the balance voltage
+    digitalWrite(cell4Bal, LOW);      //turn the balance circuit off for cell 3
+  } 
+
+  if (flag == 1) {                    //if the flag has been set to 1
+    for (int i = 0; i < 3000; i++) {     //wait 3 seconds while reading the buttons
+      readSwitch();
+      if ((buttonVal1 || buttonVal2) == HIGH) {         //if a button is pressed
+        i = 5000;                     //set i over 3000 and end the delay (acts like an interupt
+      }
+      delay(1);
+    } 
+    digitalWrite(cell1Bal, LOW);      //turn off balance circuit for cell 1
+    digitalWrite(cell2Bal, LOW);      //turn off balance circuit for cell 2
+    digitalWrite(cell3Bal, LOW);      //turn off balance circuit for cell 3
+    digitalWrite(cell4Bal, LOW);      //turn off balance circuit for cell 4
+    flag = 0;                         //reset flag to 0
+  
+}
+}
+
+void takeMeasurements() {
+  
+  adcValue = analogRead(A7);
+  float adcValueCh = analogRead(A6);
+  float voltage = (adcValue /1024) * zenerV;
+  float voltageCh = (adcValueCh /1024) * zenerV;
+
+  // Calculate current
+  currentAmps = voltage / (gain * Rsense);          // I = V / (Gain * Rsense)
+  currentAmpsCh = voltageCh / (gain * Rsense);
+
+  for (int i = 0; i < averages; i++) {              //for loop used to get an average voltage of the cells
+    zenerVal = 2.47;                                //read the analog value for the voltage reference
+    supplyV = 4.95;                                 //calculate the supply voltage of the arduino using the analog value from above
+    calV = (supplyV - 5.00) * 10.00;                //find the diffence between the supply voltage and the expected 5 volts
+
+    cell1Val = analogRead(A0);                      //read the analog value for cell 1
+    cell2Val = analogRead(A1);                      //read the analog value for cell 1&2
+    cell3Val = analogRead(A2);                      //read the analog value for cell 1&2&3
+    cell4Val = analogRead(A3);
+    temp = thermocouple.readCelsius();              //reads the temperature of the thermocouple
+
+    cell1V = (cell1Val * (cell1Cal + calV)) / 1024; //turn the analog value into a voltage that is calibrated as accurately as possible for cell 1
+    cell2V = (cell2Val * (cell2Cal + calV)) / 1024; //turn the analog value into a voltage that is calibrated as accurately as possible for cell 1&2
+    cell3V = (cell3Val * (cell3Cal + calV)) / 1024; //turn the analog value into a voltage that is calibrated as accurately as possible for cell 1&2&3
+    cell4V = (cell4Val * (cell4Cal + calV)) / 1024; //turn the analog value into a voltage that is calibrated as accurately as possible for cell 1&2&3&4
+
+    cell1AverageVal = cell1AverageVal + cell1V;     //add the present voltage to the pervious voltages of cell 1
+    cell2AverageVal = cell2AverageVal + cell2V;     //add the present voltage to the pervious voltages of cell 1&2
+    cell3AverageVal = cell3AverageVal + cell3V;     //add the present voltage to the pervious voltages of cell 1&2&3
+    cell4AverageVal = cell4AverageVal + cell4V;     //add the present voltage to the pervious voltages of cell 1&2&3&4
+    delay(1);                                       //delay between measurements                                
+  }                                                 //end of the for loop
+
+  cell1AverageV = cell1AverageVal / averages;       //calculate the average of the readings above for cell 1
+  cell2AverageV = cell2AverageVal / averages;       //calculate the average of the readings above for cell 1&2
+  cell3AverageV = cell3AverageVal / averages;       //calculate the average of the readings above for cell 1&2&3
+  cell4AverageV = cell4AverageVal / averages;       //calculate the average of the readings above for cell 1&2&3&4
+
+
+  cell2AverageV = cell2AverageV - cell1AverageV;    //calculate the volage of cell 2 only
+  cell3AverageV = cell3AverageV - (cell2AverageV + cell1AverageV);  //calculate the volage of cell 3 only
+  cell4AverageV = cell4AverageV - (cell3AverageV + cell2AverageV + cell1AverageV);  //calculate the volage of cell 4 only
+
+  cell1AverageVal = 0;                //reset the total added voltages for cell 1
+  cell2AverageVal = 0;                //reset the total added voltages for cell 2
+  cell3AverageVal = 0;                //reset the total added voltages for cell 3
+  cell4AverageVal = 0;                //reset the total added voltages for cell 4
+
+}
+
+
+void safetyCheck() {
+  if (cell1AverageV <= protectLow || cell2AverageV <= protectLow || cell3AverageV <= protectLow || cell4AverageV <= protectLow)  {  //if any of the cells have a low voltage
+    digitalWrite(powerOut, LOW);       //turn off power out 
+
+    lcd.clear();
+    lcd.print("Error");
+    lcd.setCursor(0, 1);
+    lcd.print("Pack V. Low"); 
+    for (int i = 0; i < 3000; i++) {                    //wait a while while reading the buttons
+      readSwitch();
+      if ((buttonVal1 || buttonVal2) == HIGH) {         //if a button is pressed
+        i = 3100;                                       //set i over 3000 and end the delay (acts like an interupt)
+      }
+      delay(10);
+    }
+  }
+  else {                                                //if the cell voltages are not below a safe voltage
+    digitalWrite(powerOut, HIGH);                       //turn on power out
+    } 
+  if (currentAmps > ampCutoff) {                        //if too much current is flowing out of the pack
+    digitalWrite(powerOut, LOW);                        //turn off power out
+
+    lcd.clear();
+    lcd.print("Error");
+    lcd.setCursor(0, 1);
+    lcd.print("Overcurrent"); 
+    for (int i = 0; i < 3000; i++) {                    //wait a while while reading the buttons
+      readSwitch();
+      if ((buttonVal1 || buttonVal2) == HIGH) {         //if a button is pressed
+        i = 3100;                                       //set i over 3000 and end the delay (acts like an interupt)
+      }
+      delay(10);
+    }
+  }//end of if statment                                                     
+
+  else {                                //if cells are good
+    digitalWrite(powerOut, HIGH);       //turn on power out
+  } 
+  
+  if (temp > maxTemp) {                 //if the temperature is too high
+    digitalWrite(powerOut, LOW);        //turn off power out 
+
+    lcd.clear();
+    lcd.print("Error");
+    lcd.setCursor(0, 1);
+    lcd.print("High temp"); 
+    for (int i = 0; i < 3000; i++) {                     //wait a while while reading the buttons
+      readSwitch();
+      if ((buttonVal1 || buttonVal2) == HIGH) {         //if a button is pressed
+        i = 3100;                                       //set i over 3000 and end the delay (acts like an interupt)
+      }
+      delay(10);
+    }                                  
+  }//end of if statment
+  else {                                                //if the cells are in SOA
+    digitalWrite(powerOut, HIGH);                       //turn on power out
+  }
+}
