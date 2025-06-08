@@ -10,10 +10,10 @@ float cell4V = 0.00;          //sets variable for the voltage of the third cell
 float calV = 0.00;            //sets variable for supply voltage compensation
 float supplyV = 4.95;         //sets variable for the voltage of the supply to the arduino
 
-const float cell1Cal = 16.00 + 0.5; //allows for voltage calibration of the first cell, default = 50.00 + 0.00
-const float cell2Cal = 16.00 + 0.08; //allows for voltage calibration of the second cell, default = 50.00 + 0.00
-const float cell3Cal = 16.00 + 0.13; //allows for voltage calibration of the third cell, default = 50.00 + 0.00
-const float cell4Cal = 16.00 + 0.08; //allows for voltage calibration of the third cell, default = 50.00 + 0.00
+const float cell1Cal = 16.00 + 0.5; //allows for voltage calibration of the first cell
+const float cell2Cal = 16.00 + 0.08; //allows for voltage calibration of the second cell
+const float cell3Cal = 16.00 + 0.13; //allows for voltage calibration of the third cell
+const float cell4Cal = 16.00 + 0.08; //allows for voltage calibration of the third cell
 
 const float zenerV = 2.47;    // measured voltage of the voltage reference
 
@@ -26,18 +26,16 @@ float cell1AverageV = 0.00;   //sets variable for the current voltage of cell 1
 float cell2AverageV = 0.00;   //sets variable for the current voltage of cell 2
 float cell3AverageV = 0.00;   //sets variable for the current voltage of cell 3
 float cell4AverageV = 0.00;   //sets variable for the current voltage of cell 4
-float cellAverageV = 0.00;    //average voltage
-
-
+float cellAverageV = 0.00;    //average voltage 
 
 float currentAmps = 0.00;     //output current variable
 float currentAmpsCh = 0.00;   //input current variable
-float temp = 0.00;
+float temp = 0.00;            //temperature variable
 
 float balanceVal = 3.65;      //voltage for the balancing to start
 float protectLow = 2.5;       //voltage for undervoltage protection
 float maxTemp = 45;           //max temp where output is turned off
-float ampCutoff = 2.5;        //current where output is turned off
+float ampCutoff = 2.5;        //max current where output is turned off
 
 int zenerVal = 0;             
 int cell1Val = 0;             //variable used for analog reading of cell 1
@@ -57,6 +55,7 @@ int flag = 0;                 //sets up a flag for later use in cell balancing
 int wait = 0;
 int mode = 0;
 
+//variables and pins for button control
 int buttonPin = 2;
 int buttonPin2 = 3;
 int lastButtonState = HIGH;
@@ -102,7 +101,7 @@ void setup() {
   lcd.backlight();            // turns on backlight of LCD
   Serial.begin(115200);       //enables serial output
   lcd.setCursor(0,0);         //enables the 16x2 LCD
-  lcd.print("Loading");       //write something to the LCD
+  lcd.print("Starting");       //write something to the LCD
   lcd.setCursor(0,1);         //move the cursor the the second line
   lcd.print("Digital BMS");   //write more to the LCD
 
@@ -146,7 +145,7 @@ void operate () {
       break;
   }
 }
-void readSwitch() { //reads the input of switches
+void readSwitch() { //reads the input of buttons
   int buttonVal = digitalRead(buttonPin);
   int buttonVal2 = digitalRead(buttonPin2);
   if((buttonVal == LOW) && (lastButtonState == HIGH)) {
@@ -170,14 +169,14 @@ void serialDump() {
   Serial.print("Cell 4 Voltage = ");
   Serial.println(cellAverageV);
   Serial.print("Supply Voltage = ");
-  Serial.println(supplyV);
-
-  Serial.print("Button State = ");
-  Serial.println(buttonState);
-  Serial.print("LCD State = ");           //end of serial writing
+  Serial.println(supplyV);  
+  Serial.print("Out current = ");
+  Serial.println(currentAmps); 
+  Serial.print("Temperatura = ");
+  Serial.println(temp);  //end of serial writing
 }
 
-void lcdWrite() {
+void lcdWrite() { //displayed variables switch after displayInterval seconds (10)
   unsigned long currentTime = millis();
   bool showVoltage = ((currentTime - lastSwitchTime) / displayInterval) % 2 == 0;
   switch (currentMode) {
